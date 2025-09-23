@@ -5,7 +5,6 @@ use crate::button::{
 };
 use crate::log::InfoPanel;
 use crate::update::UpdateButton;
-use anyhow::Result;
 use button::DonateButton;
 use config::Config;
 use dioxus::desktop::tao::platform::windows::{IconExtWindows, WindowBuilderExtWindows};
@@ -25,12 +24,6 @@ mod patcher_preload;
 mod sq;
 mod steamless;
 mod update;
-
-#[derive(Clone, Routable, Debug, PartialEq)]
-enum Route {
-	#[route("/")]
-	App {},
-}
 
 #[cfg(feature = "bundle")]
 const ASSETS: &str = "assets";
