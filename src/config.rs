@@ -1,62 +1,38 @@
-use std::{
-	path::{Path, PathBuf},
-	str::FromStr,
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use steamlocate::SteamDir;
 
-use crate::steamless;
-
-const STEAMLESS_PATH_DEFAULT: &str = "./steamless";
+const CONFIG_FILE: &str = "bb-patcher-config.toml";
 const BB_GAME_ID: u32 = 365360;
 
-#[derive(Deserialize, Serialize, Clone)]
-#[serde(from = "SerializedConfig", into = "SerializedConfig")]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Config {
-	bb_path: Option<PathBuf>,
-	steamless_installed: bool,
-	steamless_path: PathBuf,
+	pub bb_path: Option<PathBuf>,
 }
 
-#[derive(Deserialize, Serialize)]
-struct SerializedConfig {
-	bb_path: Option<PathBuf>,
-	steamless_path: PathBuf,
-}
-
-impl From<SerializedConfig> for Config {
-	fn from(value: SerializedConfig) -> Self {
+impl Default for Config {
+	fn default() -> Self {
 		Self {
-			bb_path: value.bb_path,
-			steamless_installed: false,
-			steamless_path: value.steamless_path,
+			bb_path: find_bb().ok(),
 		}
 	}
 }
 
-impl From<Config> for SerializedConfig {
-	fn from(value: Config) -> Self {
-		Self {
-			bb_path: value.bb_path,
-			steamless_path: value.steamless_path,
-		}
-	}
-}
-
-const CONFIG_FILE: &str = "config.toml";
-
-fn find_steam() -> Result<SteamDir> {
-	steamlocate::SteamDir::locate().context("steamlocate couldn't locate Steam")
-}
-
+#[cfg(feature = "steam-detect")]
 fn find_bb() -> Result<PathBuf> {
-	let steam_dir = find_steam()?;
+	let steam_dir = steamlocate::SteamDir::locate().context("steamlocate couldn't locate Steam")?;
 	match steam_dir.find_app(BB_GAME_ID)? {
 		Some((app, lib)) => Ok(lib.resolve_app_dir(&app)),
-		None => Err(anyhow!("Couldn't locate Battle Brothers")),
+		None => Err(anyhow!("Couldn't locate Battle Brothers via Steam")),
 	}
+}
+
+#[cfg(not(feature = "steam-detect"))]
+fn find_bb() -> Result<PathBuf> {
+	Err(anyhow!(
+		"Steam auto-detection disabled. Please specify game path manually."
+	))
 }
 
 #[derive(Debug)]
@@ -93,28 +69,9 @@ impl AsRef<Path> for ExePath {
 	}
 }
 
-impl Default for Config {
-	fn default() -> Self {
-		Self {
-			bb_path: find_bb().ok(),
-			steamless_installed: false,
-			steamless_path: PathBuf::from_str(STEAMLESS_PATH_DEFAULT).unwrap(),
-		}
-	}
-}
-
 impl Config {
 	pub fn load_or_default() -> Self {
 		Self::load().unwrap_or_default()
-	}
-
-	#[cfg(test)]
-	pub fn from_path(path: PathBuf) -> Self {
-		Self {
-			bb_path: Some(path),
-			steamless_installed: false,
-			steamless_path: PathBuf::from_str(STEAMLESS_PATH_DEFAULT).unwrap(),
-		}
 	}
 
 	pub fn save(&self) -> Result<()> {
@@ -131,11 +88,6 @@ impl Config {
 		Ok(config)
 	}
 
-	pub fn bb_path_known(&self) -> bool {
-		self.bb_path.is_some()
-	}
-
-	// todo check that exe exists
 	pub fn get_bb_exe_path(&self) -> Option<ExePath> {
 		self.bb_path
 			.as_ref()
@@ -150,7 +102,22 @@ impl Config {
 			.filter(|data_path| data_path.join("data_001.dat").exists())
 	}
 
-	pub fn set_path_from_exe<'a>(&'a mut self, exe_path: &'a Path) -> Result<&'a Path> {
+	pub fn set_path(&mut self, bb_path: &Path) -> Result<()> {
+		// Validate the path
+		let exe_path = bb_path.join("win32").join("BattleBrothers.exe");
+		if !exe_path.exists() {
+			return Err(anyhow!("BattleBrothers.exe not found at {:?}", exe_path));
+		}
+		let data_path = bb_path.join("data").join("data_001.dat");
+		if !data_path.exists() {
+			return Err(anyhow!("data_001.dat not found at {:?}", data_path));
+		}
+		self.bb_path = Some(bb_path.to_path_buf());
+		self.save()?;
+		Ok(())
+	}
+
+	pub fn set_path_from_exe(&mut self, exe_path: &Path) -> Result<PathBuf> {
 		if exe_path.file_name().context("Couldn't get exe file name")? != "BattleBrothers.exe" {
 			return Err(anyhow!("Not a Battle Brothers exe"));
 		}
@@ -169,51 +136,6 @@ impl Config {
 		self.bb_path = Some(bb_dir.to_path_buf());
 		self.save()?;
 
-		Ok(bb_dir)
-	}
-
-	pub fn check_steamless_installed(&mut self) -> bool {
-		self.steamless_installed = steamless::is_steamless_installed(&self.steamless_path);
-		self.steamless_installed
-	}
-
-	pub fn is_steamless_installed(&self) -> bool {
-		self.steamless_installed
-	}
-
-	pub fn get_steamless_path(&self) -> &Path {
-		&self.steamless_path
-	}
-
-	fn launch_game_from_exe(&self) -> Result<()> {
-		let exe_path = self
-			.get_bb_exe_path()
-			.context("Couldn't find BattleBrothers.exe")?;
-		std::process::Command::new(exe_path.as_ref())
-			.spawn()
-			.context("Couldn't launch Battle Brothers")?;
-		Ok(())
-	}
-
-	pub fn launch_game(&self) -> Result<()> {
-		let found_path = find_bb();
-		let bb_path = self.bb_path.as_ref();
-		match (found_path, bb_path) {
-			(Ok(found_path), Some(bb_path)) => {
-				if &found_path != bb_path {
-					self.launch_game_from_exe()
-				} else {
-					let steam_dir = find_steam()?;
-					let steam_path = steam_dir.path();
-					std::process::Command::new(steam_path.join("steam.exe"))
-						.arg(format!("steam://rungameid/{}", BB_GAME_ID))
-						.spawn()
-						.context("Couldn't Launch Battle Brothers via steam")?;
-					Ok(())
-				}
-			}
-			(_, Some(_)) => self.launch_game_from_exe(),
-			_ => Err(anyhow!("Couldn't find Battle Brothers")),
-		}
+		Ok(bb_dir.to_path_buf())
 	}
 }

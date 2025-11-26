@@ -1,12 +1,11 @@
 use anyhow::{anyhow, Result};
-use dioxus::signals::{ReadOnlySignal, Readable, SyncStorage};
 use std::collections::HashSet;
 use std::io::Write;
 use std::{fs::File, io::Read, path::Path};
 use zip::ZipArchive;
 use zip::{write::SimpleFileOptions, CompressionMethod};
 
-use crate::config::{Config, DataPath};
+use crate::config::DataPath;
 
 const TABBED_NEWLINE: &str = "\n\t\t\t";
 
@@ -31,6 +30,12 @@ impl ResourceGatherer {
 			on_running: HashSet::new(),
 			on_start: HashSet::new(),
 		}
+	}
+}
+
+impl Default for ResourceGatherer {
+	fn default() -> Self {
+		Self::new()
 	}
 }
 
@@ -92,6 +97,14 @@ impl ResourceHandler {
 	pub fn get_on_start_raw(&self) -> String {
 		ResourceHandler::make_raw_strings(&self.on_start)
 	}
+
+	pub fn on_running_count(&self) -> usize {
+		self.on_running.len()
+	}
+
+	pub fn on_start_count(&self) -> usize {
+		self.on_start.len()
+	}
 }
 
 fn read_file_in_zip(zip_file: &mut ZipArchive<File>, name: &str) -> Result<String> {
@@ -107,7 +120,6 @@ fn read_file_in_zip(zip_file: &mut ZipArchive<File>, name: &str) -> Result<Strin
 
 pub fn gather_resources_for_mod(gatherer: &mut ResourceGatherer, mod_path: &Path) -> Result<()> {
 	let file = std::fs::File::open(mod_path)?;
-	// not sure why the API requires this to be mut
 	let mut zip_file = match zip::ZipArchive::new(file) {
 		Err(zip::result::ZipError::InvalidArchive(_)) => return Ok(()),
 		Err(e) => return Err(anyhow!(e)),
@@ -164,29 +176,8 @@ pub fn create_mod(data_path: &DataPath, resources: &ResourceHandler) -> Result<(
 	Ok(())
 }
 
-pub fn sync_gather_and_create_mod(data_path: &DataPath) -> Result<()> {
+pub fn gather_and_create_mod(data_path: &DataPath) -> Result<ResourceHandler> {
 	let resources = get_resource_handler(data_path)?;
-	create_mod(data_path, &resources)
-}
-
-pub async fn async_gather_and_create_mod(config: ReadOnlySignal<Config, SyncStorage>) {
-	let data_path = match config.read().get_bb_data_path() {
-		Some(path) => path,
-		None => {
-			tracing::error!("Couldn't find /data folder");
-			return;
-		}
-	};
-	match sync_gather_and_create_mod(&data_path) {
-		Ok(_) => {
-			tracing::info!("Patcher Succeeded");
-		}
-		Err(e) => {
-			tracing::error!("Patcher failed: {}", e);
-		}
-	}
-}
-
-pub async fn mt_gather_and_create_mod(config: ReadOnlySignal<Config, SyncStorage>) {
-	let _ = tokio::spawn(async move { async_gather_and_create_mod(config).await }).await;
+	create_mod(data_path, &resources)?;
+	Ok(resources)
 }
